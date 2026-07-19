@@ -300,6 +300,25 @@ async function loadWeather(lat, lon, label){
   }
 }
 
+async function getCityName(lat, lon){
+  try{
+    const url = `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=pt`;
+    const res = await fetch(url);
+    const data = await res.json();
+    const city = data.city || data.locality || data.principalSubdivision;
+    if(!city) return null;
+    return data.principalSubdivision && data.principalSubdivision !== city
+      ? `${city}, ${data.principalSubdivisionCode ? data.principalSubdivisionCode.split('-').pop() : data.principalSubdivision}`
+      : city;
+  }catch(e){ return null; }
+}
+
+async function loadWeatherWithCity(lat, lon){
+  loadWeather(lat, lon, 'Localizando cidade...');
+  const city = await getCityName(lat, lon);
+  loadWeather(lat, lon, city || 'Sua localização');
+}
+
 function requestLocation(){
   const body = document.getElementById('weather-body');
   if(!navigator.geolocation){
@@ -308,7 +327,7 @@ function requestLocation(){
   }
   body.innerHTML = '<div class="news-loading">Localizando...</div>';
   navigator.geolocation.getCurrentPosition(
-    pos => loadWeather(pos.coords.latitude.toFixed(2), pos.coords.longitude.toFixed(2), 'Sua localização'),
+    pos => loadWeatherWithCity(pos.coords.latitude.toFixed(2), pos.coords.longitude.toFixed(2)),
     (err) => {
       let msg = 'Não foi possível obter sua localização.';
       if(err.code === 1) msg = 'Permissão de localização negada. Ative nas configurações do navegador e toque no botão abaixo.';
@@ -336,7 +355,7 @@ document.getElementById('loc-btn').addEventListener('click', requestLocation);
   } else if(navigator.geolocation){
     // refresh silently in the background with the real current position
     navigator.geolocation.getCurrentPosition(
-      pos => loadWeather(pos.coords.latitude.toFixed(2), pos.coords.longitude.toFixed(2), 'Sua localização'),
+      pos => loadWeatherWithCity(pos.coords.latitude.toFixed(2), pos.coords.longitude.toFixed(2)),
       () => {}, // keep cached result if this fails silently
       { enableHighAccuracy:true, timeout:10000 }
     );
@@ -487,177 +506,4 @@ async function loadNews(){
 }
 loadNews();
 
-// ---------- Voice: speech recognition (input) + speech synthesis (output) ----------
-const micBtn = document.getElementById('mic-btn');
-const micLabel = document.getElementById('mic-label');
-const voiceReply = document.getElementById('voice-reply');
-
-let jarvisVoice = null;
-function pickVoice(){
-  const voices = speechSynthesis.getVoices();
-  jarvisVoice =
-    voices.find(v => v.lang.startsWith('pt') && /male|masculin/i.test(v.name)) ||
-    voices.find(v => v.lang === 'pt-BR') ||
-    voices.find(v => v.lang.startsWith('pt')) ||
-    voices[0] || null;
-}
-pickVoice();
-if(speechSynthesis.onvoiceschanged !== undefined) speechSynthesis.onvoiceschanged = pickVoice;
-
-function speak(text){
-  voiceReply.textContent = text;
-  try{
-    speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    if(jarvisVoice) u.voice = jarvisVoice;
-    u.lang = 'pt-BR';
-    u.pitch = 0.85;
-    u.rate = 1.0;
-    u.onstart = () => micBtn.classList.add('speaking');
-    u.onend = () => micBtn.classList.remove('speaking');
-    speechSynthesis.speak(u);
-  }catch(e){}
-}
-
-function handleCommand(raw){
-  const cmd = raw.toLowerCase().trim();
-  voiceReply.dataset.lastCmd = cmd;
-
-  if(/que horas|horas s[aã]o|hora atual/.test(cmd)){
-    const now = new Date();
-    speak(`São ${now.getHours()} horas e ${String(now.getMinutes()).padStart(2,'0')}.`);
-    return;
-  }
-  if(/que dia|data de hoje|dia é hoje/.test(cmd)){
-    const now = new Date();
-    const meses = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
-    speak(`Hoje é dia ${now.getDate()} de ${meses[now.getMonth()]}.`);
-    return;
-  }
-  if(/clima|temperatura|tempo (l[aá] fora|hoje)|como est[aá] o tempo/.test(cmd)){
-    const tempEl = document.querySelector('.weather-temp');
-    const descEl = document.querySelector('.weather-desc');
-    if(tempEl && descEl){
-      speak(`No momento estão ${tempEl.textContent}, ${descEl.textContent.toLowerCase()}.`);
-    } else {
-      speak('Ainda não tenho os dados climáticos disponíveis.');
-    }
-    return;
-  }
-  if(/adicionar tarefa|nova tarefa|nova diretiva|crie uma tarefa/.test(cmd)){
-    const m = cmd.match(/(?:adicionar tarefa|nova tarefa|nova diretiva|crie uma tarefa)[: ]*(.+)/);
-    const val = m && m[1] ? m[1].trim() : '';
-    if(val){
-      tasks.push({text: val.charAt(0).toUpperCase()+val.slice(1), done:false});
-      renderTasks();
-      saveTasks();
-      speak(`Diretiva adicionada: ${val}.`);
-    } else {
-      speak('Não entendi o texto da tarefa. Tente novamente dizendo a tarefa depois do comando.');
-    }
-    return;
-  }
-  if(/minhas tarefas|quais (s[aã]o as )?tarefas|listar tarefas/.test(cmd)){
-    const pendentes = tasks.filter(t => !t.done);
-    if(pendentes.length === 0){
-      speak('Você não tem diretivas pendentes.');
-    } else {
-      speak(`Você tem ${pendentes.length} diretiva${pendentes.length>1?'s':''} pendente${pendentes.length>1?'s':''}: ${pendentes.map(t=>t.text).join(', ')}.`);
-    }
-    return;
-  }
-  if(/not[ií]cias|manchetes/.test(cmd)){
-    const first = document.querySelector('.news-item a');
-    if(first){
-      speak(`Manchete principal: ${first.textContent}.`);
-    } else {
-      speak('As notícias ainda não foram carregadas.');
-    }
-    return;
-  }
-  // expenses: "gastei 50 reais no mercado" / "comprei ração por 30 reais" / "adicionar despesa 20 reais uber"
-  let m = cmd.match(/gastei\s+(?:r\$\s*)?(\d+(?:[.,]\d{1,2})?)\s*(?:reais)?\s*(?:em|com|no|na|de)?\s*(.*)/);
-  if(!m) m = cmd.match(/comprei\s+(.+?)\s+por\s+(?:r\$\s*)?(\d+(?:[.,]\d{1,2})?)\s*(?:reais)?/);
-  if(!m) m = cmd.match(/(?:adicionar|nova|registrar)\s+despesa\s+(?:de\s+)?(?:r\$\s*)?(\d+(?:[.,]\d{1,2})?)\s*(?:reais)?\s*(?:em|com|de)?\s*(.*)/);
-  if(m){
-    let value, desc;
-    if(cmd.startsWith('comprei')){ desc = m[1]; value = m[2]; }
-    else { value = m[1]; desc = m[2]; }
-    value = parseFloat(String(value).replace(',', '.'));
-    desc = (desc || 'Despesa por voz').trim();
-    if(addExpense(desc, value)){
-      speak(`Despesa registrada: ${fmtBRL(value)} em ${desc}.`);
-    } else {
-      speak('Não consegui identificar o valor da despesa.');
-    }
-    return;
-  }
-  if(/quanto (eu )?gastei|total de despesas|minhas despesas/.test(cmd)){
-    const total = expenses.reduce((s,e) => s + e.value, 0);
-    if(expenses.length === 0){
-      speak('Você ainda não registrou nenhuma despesa.');
-    } else {
-      speak(`Você gastou ${fmtBRL(total)} no total, em ${expenses.length} despesa${expenses.length>1?'s':''}.`);
-    }
-    return;
-  }
-  if(/^(oi|ol[aá]|e a[ií]|fala)( jarvis)?$/.test(cmd)){
-    speak('Às ordens. Pode falar.');
-    return;
-  }
-  if(/quem [eé] voc[eê]|seu nome/.test(cmd)){
-    speak('Eu sou o seu assistente pessoal.');
-    return;
-  }
-  speak('Não entendi o comando. Pode repetir?');
-}
-
-const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
-let recognition = null;
-let isListening = false;
-
-if(SpeechRecognitionAPI){
-  recognition = new SpeechRecognitionAPI();
-  recognition.lang = 'pt-BR';
-  recognition.continuous = false;
-  recognition.interimResults = false;
-  recognition.maxAlternatives = 1;
-
-  recognition.onstart = () => {
-    isListening = true;
-    micBtn.classList.add('listening');
-    micLabel.textContent = 'OUVINDO...';
-    voiceReply.textContent = '';
-  };
-  recognition.onresult = (e) => {
-    const transcript = e.results[0][0].transcript;
-    voiceReply.textContent = `"${transcript}"`;
-    setTimeout(() => handleCommand(transcript), 150);
-  };
-  recognition.onerror = (e) => {
-    micLabel.textContent = 'TOQUE E FALE';
-    if(e.error === 'not-allowed' || e.error === 'permission-denied'){
-      voiceReply.textContent = 'Permissão de microfone negada.';
-    } else if(e.error === 'no-speech'){
-      voiceReply.textContent = 'Não ouvi nada. Tente de novo.';
-    }
-  };
-  recognition.onend = () => {
-    isListening = false;
-    micBtn.classList.remove('listening');
-    micLabel.textContent = 'TOQUE E FALE';
-  };
-
-  micBtn.addEventListener('click', () => {
-    if(isListening) { recognition.stop(); return; }
-    speechSynthesis.cancel();
-    try{ recognition.start(); }catch(e){}
-  });
-} else {
-  micLabel.textContent = 'VOZ INDISPONÍVEL NESTE NAVEGADOR';
-  micBtn.style.opacity = '0.4';
-  micBtn.style.pointerEvents = 'none';
-}
-</script>
-</body>
-</html>
+// ---------- Voice: speech recognition (input) + speech sy
